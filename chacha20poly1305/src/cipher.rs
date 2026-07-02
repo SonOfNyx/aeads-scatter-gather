@@ -110,3 +110,192 @@ where
         Ok(())
     }
 }
+
+use core::marker::PhantomData;
+
+#[derive(Debug, Clone, Copy)]
+pub struct AadPhase;
+
+#[derive(Debug, Clone, Copy)]
+pub struct PayloadPhase;
+
+/// ChaCha20Poly1305 scatter/gather style instantiated with a particular nonce
+#[derive(Debug)]
+pub struct StreamingCipher<C, State>
+where
+    C: StreamCipher + StreamCipherSeek,
+{
+    cipher: C,
+    mac: Poly1305,
+    aad_len: u64,
+    payload_len: u64,
+    buffer: [u8; 16],
+    buffer_pos: usize,
+    _state: PhantomData<State>,
+}
+
+impl<C, State> StreamingCipher<C, State>
+where
+    C: StreamCipher + StreamCipherSeek,
+{
+    // Helper function to process data in chunks of 16 bytes for Poly1305 MAC computation.
+    fn process_mac(&mut self, mut data: &[u8]) -> Result<(), Error> {
+        // If there's leftover data in the buffer from a previous call, it needs to be processed first.
+        if self.buffer_pos > 0 {
+            let space = 16 - self.buffer_pos;
+            // If the incoming data is enough to fill the buffer, process it. 
+            // Otherwise, just fill the buffer and return.
+            if data.len() >= space {
+                self.buffer[self.buffer_pos..16].copy_from_slice(&data[..space]);
+                
+                let block = self.buffer.as_slice().try_into().map_err(|_| Error)?;
+                self.mac.update(&[block]); 
+                
+                data = &data[space..];
+                self.buffer_pos = 0;
+            } else {
+                self.buffer[self.buffer_pos..self.buffer_pos + data.len()].copy_from_slice(data);
+                self.buffer_pos += data.len();
+                return Ok(());
+            }
+        }
+
+        let mut offset = 0;
+        while offset + 16 <= data.len() {
+            let block = data[offset..offset + 16].try_into().map_err(|_| Error)?;
+            self.mac.update(&[block]);
+        
+            offset += 16;
+        }
+
+        let remainder = &data[offset..]; 
+        if !remainder.is_empty() {
+            self.buffer[..remainder.len()].copy_from_slice(remainder);
+            self.buffer_pos = remainder.len();
+        }
+        Ok(())
+    }
+}
+
+impl<C> StreamingCipher<C, AadPhase>
+where
+    C: StreamCipher + StreamCipherSeek,
+{
+    /// Creates new StreamingCipher instance
+    pub fn new(mut cipher: C) -> Self {
+        let mut mac_key = poly1305::Key::default();
+        cipher.apply_keystream(&mut mac_key);
+
+        let mac = Poly1305::new(&mac_key);
+        #[cfg(feature = "zeroize")]
+        {
+            use zeroize::Zeroize;
+            mac_key.zeroize();
+        }
+
+        cipher.seek(BLOCK_SIZE as u64);
+
+        Self { 
+            cipher, 
+            mac, 
+            aad_len: 0, 
+            payload_len: 0,
+            buffer: [0u8; 16],
+            buffer_pos: 0,
+            _state: PhantomData,
+        }
+    }
+
+    /// Function to incrementally update the AAD. 
+    /// This function can be called multiple times with different slices of AAD data.
+    /// This is step 1 of the streaming encryption/decryption process.
+    /// Afterwards, the `finish_aad` function must be called to finalize the AAD processing.
+    pub fn update_aad(&mut self, data: &[u8]) -> Result<(), Error> {
+        self.process_mac(data)?;
+        self.aad_len += data.len() as u64;
+        Ok(())
+    }
+
+    /// Function to finalize the AAD processing.
+    pub fn finish_aad(mut self) -> Result<StreamingCipher<C, PayloadPhase>, Error> {
+        if self.buffer_pos > 0 {
+            let remainder = &self.buffer[..self.buffer_pos];
+            self.mac.update_padded(remainder);
+            self.buffer_pos = 0;
+        }
+        
+        Ok(StreamingCipher {
+            cipher: self.cipher,
+            mac: self.mac,
+            aad_len: self.aad_len,
+            payload_len: self.payload_len,
+            buffer: self.buffer,
+            buffer_pos: self.buffer_pos,
+            _state: PhantomData,
+        })
+    }
+}
+
+impl<C> StreamingCipher<C, PayloadPhase>
+where
+    C: StreamCipher + StreamCipherSeek,
+{
+    /// Function to incrementally update the payload for encryption.
+    /// This function can be called multiple times with different slices of payload data.
+    /// This is step 2 of the streaming encryption process.
+    /// Afterwards, the `finalize` or `verify_and_finalize` function must be called to finalize 
+    /// the payload processing and obtain the authentication tag.
+    pub fn update_payload(&mut self, mut buffer: InOutBuf<'_, '_, u8>) -> Result<(), Error> {
+        self.payload_len += buffer.len() as u64;
+        
+        self.cipher.apply_keystream_inout(buffer.reborrow());
+        self.process_mac(buffer.get_out())?;
+        Ok(())
+    }
+
+    /// Function to incrementally update the payload for decryption.
+    /// This function can be called multiple times with different slices of payload data.
+    /// This is step 2 of the streaming decryption process.
+    /// Afterwards, the `finalize` or `verify_and_finalize` function must be called to finalize 
+    /// the payload processing and obtain the authentication tag.
+    pub fn update_payload_decrypt(&mut self, mut buffer: InOutBuf<'_, '_, u8>) -> Result<(), Error> {
+        self.payload_len += buffer.len() as u64;
+        self.process_mac(buffer.get_in())?;
+        self.cipher.apply_keystream_inout(buffer.reborrow());
+        Ok(())
+    }
+
+    /// Function to finalize the streaming encryption process and obtain the authentication tag.
+    pub fn finalize(mut self) -> Result<Tag, Error> {
+        if self.buffer_pos > 0 {
+            let remainder = &self.buffer[..self.buffer_pos];
+            self.mac.update_padded(remainder);
+        }
+
+        let mut block = Array::default();
+        block[..8].copy_from_slice(&self.aad_len.to_le_bytes());
+        block[8..].copy_from_slice(&self.payload_len.to_le_bytes());
+        self.mac.update(&[block]);
+        
+        Ok(self.mac.finalize())
+    }
+
+    /// Function to verify the authentication tag and finalize the streaming decryption process.
+    pub fn verify_and_finalize(mut self, expected_tag: &Tag) -> Result<(), Error> {
+        if self.buffer_pos > 0 {
+            let remainder = &self.buffer[..self.buffer_pos];
+            self.mac.update_padded(remainder);
+        }
+
+        let mut block = Array::default();
+        block[..8].copy_from_slice(&self.aad_len.to_le_bytes());
+        block[8..].copy_from_slice(&self.payload_len.to_le_bytes());
+        self.mac.update(&[block]);
+
+        if self.mac.verify(expected_tag).is_ok() {
+            Ok(())
+        } else {
+            Err(Error)
+        }
+    }
+}

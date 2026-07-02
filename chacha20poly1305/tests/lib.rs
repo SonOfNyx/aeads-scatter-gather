@@ -81,6 +81,70 @@ macro_rules! impl_tests {
             let cipher = <$cipher>::new(&key);
             assert!(cipher.decrypt(&nonce, payload).is_err());
         }
+
+        #[test]
+        fn stream_encrypt() {
+            use chacha20poly1305::aead::inout::InOutBuf;
+            
+            let key = Array(*$key);
+            let nonce = Array(*$nonce);
+
+            let cipher = <$cipher>::new(&key);
+            let mut stream = cipher.init_stream(&nonce);
+
+            stream.update_aad($aad).unwrap();
+            let mut stream = stream.finish_aad().unwrap();
+
+            let mut buffer = $plaintext.to_vec();
+            stream.update_payload(InOutBuf::from(buffer.as_mut_slice())).unwrap();
+
+            let tag = stream.finalize().unwrap();
+
+            assert_eq!($ciphertext, buffer.as_slice());
+            assert_eq!($tag, tag.as_slice());
+        }
+
+        #[test]
+        fn stream_decrypt() {
+            use chacha20poly1305::aead::inout::InOutBuf;
+
+            let key = Array(*$key);
+            let nonce = Array(*$nonce);
+            let expected_tag = chacha20poly1305::Tag::try_from($tag).unwrap();
+
+            let cipher = <$cipher>::new(&key);
+            let mut stream = cipher.init_stream(&nonce);
+
+            stream.update_aad($aad).unwrap();
+            let mut stream = stream.finish_aad().unwrap();
+
+            let mut buffer = $ciphertext.to_vec();
+            stream.update_payload_decrypt(InOutBuf::from(buffer.as_mut_slice())).unwrap();
+
+            assert!(stream.verify_and_finalize(&expected_tag).is_ok());
+            assert_eq!($plaintext, buffer.as_slice());
+        }
+
+        #[test]
+        fn stream_decrypt_modified() {
+            use chacha20poly1305::aead::inout::InOutBuf;
+
+            let key = Array(*$key);
+            let nonce = Array(*$nonce);
+            let expected_tag = chacha20poly1305::Tag::try_from($tag).unwrap();
+
+            let cipher = <$cipher>::new(&key);
+            let mut stream = cipher.init_stream(&nonce);
+
+            stream.update_aad($aad).unwrap();
+            let mut stream = stream.finish_aad().unwrap();
+
+            let mut buffer = $ciphertext.to_vec();
+            buffer[0] ^= 0xaa; 
+
+            stream.update_payload_decrypt(InOutBuf::from(buffer.as_mut_slice())).unwrap();
+            assert!(stream.verify_and_finalize(&expected_tag).is_err());
+        }
     };
 }
 

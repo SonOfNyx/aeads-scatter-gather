@@ -5,6 +5,7 @@
     html_logo_url = "https://raw.githubusercontent.com/RustCrypto/meta/master/logo.svg",
     html_favicon_url = "https://raw.githubusercontent.com/RustCrypto/meta/master/logo.svg"
 )]
+#![warn(missing_docs, rust_2018_idioms)]
 
 //! ## Supported Algorithms
 //!
@@ -17,8 +18,8 @@
 //!   [Too Much Crypto](https://eprint.iacr.org/2019/1492.pdf)
 //!   paper for background and rationale on when these constructions could be used.
 //!   When in doubt, prefer [`ChaCha20Poly1305`].
-//! - [`XChaCha8Poly1305`] / [`XChaCha12Poly1305`] - same as above, but with an extended
-//!   192-bit (24-byte) nonce.
+//! - [`XChaCha8Poly1305`] / [`XChaCha12Poly1305`] - same as above,
+//!   but with an extended 192-bit (24-byte) nonce.
 //!
 //! # Usage
 //!
@@ -148,7 +149,10 @@ mod cipher;
 
 pub use aead::{self, AeadCore, AeadInOut, Error, KeyInit, KeySizeUser, consts};
 
-use crate::cipher::Cipher;
+use crate::cipher::AadPhase;
+pub use self::cipher::StreamingCipher;
+
+use self::cipher::Cipher;
 use ::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
 use aead::{
     TagPosition,
@@ -156,8 +160,9 @@ use aead::{
     consts::{U12, U16, U24, U32},
     inout::InOutBuf,
 };
+use core::marker::PhantomData;
+
 use chacha20::{ChaCha20, XChaCha20};
-use core::{fmt, marker::PhantomData};
 
 #[cfg(feature = "reduced-round")]
 use chacha20::{ChaCha8, ChaCha12, XChaCha8, XChaCha12};
@@ -214,6 +219,7 @@ pub type XChaCha12Poly1305 = ChaChaPoly1305<XChaCha12, U24>;
 /// Generic ChaCha+Poly1305 Authenticated Encryption with Additional Data (AEAD) construction.
 ///
 /// See the [toplevel documentation](index.html) for a usage example.
+#[derive(Debug)]
 pub struct ChaChaPoly1305<C, N: ArraySize = U12> {
     /// Secret key.
     key: Key,
@@ -306,14 +312,18 @@ where
     }
 }
 
-impl<C, N> fmt::Debug for ChaChaPoly1305<C, N>
-where
-    N: ArraySize,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ChaChaPoly1305").finish_non_exhaustive()
-    }
-}
-
 #[cfg(feature = "zeroize")]
 impl<C, N: ArraySize> zeroize::ZeroizeOnDrop for ChaChaPoly1305<C, N> {}
+
+impl<C, N> ChaChaPoly1305<C, N>
+where
+    C: KeyIvInit<KeySize = U32, IvSize = N> + StreamCipher + StreamCipherSeek,
+    N: ArraySize,
+{
+    /// Initialize a streaming cipher with the given nonce.
+    /// This allows for encrypting/decrypting and generating the MAC incrementally, rather than all at once.
+    pub fn init_stream(&self, nonce: &aead::Nonce<Self>) -> StreamingCipher<C, AadPhase> {
+        
+        StreamingCipher::new(C::new(&self.key, nonce))
+    }
+}
