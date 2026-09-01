@@ -85,7 +85,7 @@ macro_rules! impl_tests {
         #[test]
         fn stream_encrypt() {
             use chacha20poly1305::aead::inout::InOutBuf;
-            
+
             let key = Array(*$key);
             let nonce = Array(*$nonce);
 
@@ -96,7 +96,9 @@ macro_rules! impl_tests {
             let mut stream = stream.finish_aad().unwrap();
 
             let mut buffer = $plaintext.to_vec();
-            stream.update_payload(InOutBuf::from(buffer.as_mut_slice())).unwrap();
+            stream
+                .update_plaintext(InOutBuf::from(buffer.as_mut_slice()))
+                .unwrap();
 
             let tag = stream.finalize().unwrap();
 
@@ -119,7 +121,9 @@ macro_rules! impl_tests {
             let mut stream = stream.finish_aad().unwrap();
 
             let mut buffer = $ciphertext.to_vec();
-            stream.update_payload_decrypt(InOutBuf::from(buffer.as_mut_slice())).unwrap();
+            stream
+                .update_ciphertext_unverified(InOutBuf::from(buffer.as_mut_slice()))
+                .unwrap();
 
             assert!(stream.verify_and_finalize(&expected_tag).is_ok());
             assert_eq!($plaintext, buffer.as_slice());
@@ -140,9 +144,11 @@ macro_rules! impl_tests {
             let mut stream = stream.finish_aad().unwrap();
 
             let mut buffer = $ciphertext.to_vec();
-            buffer[0] ^= 0xaa; 
+            buffer[0] ^= 0xaa;
 
-            stream.update_payload_decrypt(InOutBuf::from(buffer.as_mut_slice())).unwrap();
+            stream
+                .update_ciphertext_unverified(InOutBuf::from(buffer.as_mut_slice()))
+                .unwrap();
             assert!(stream.verify_and_finalize(&expected_tag).is_err());
         }
     };

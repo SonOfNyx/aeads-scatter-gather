@@ -149,9 +149,10 @@ mod cipher;
 
 pub use aead::{self, AeadCore, AeadInOut, Error, KeyInit, KeySizeUser, consts};
 
-use crate::cipher::AadPhase;
-pub use self::cipher::StreamingCipher;
+#[cfg(feature = "streaming")]
+pub use self::cipher::{AadPhase, StreamingCipher};
 
+#[cfg(feature = "standard")]
 use self::cipher::Cipher;
 use ::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
 use aead::{
@@ -261,6 +262,7 @@ where
     const TAG_POSITION: TagPosition = TagPosition::Postfix;
 }
 
+#[cfg(feature = "standard")]
 impl<C, N> AeadInOut for ChaChaPoly1305<C, N>
 where
     C: KeyIvInit<KeySize = U32, IvSize = N> + StreamCipher + StreamCipherSeek,
@@ -315,6 +317,7 @@ where
 #[cfg(feature = "zeroize")]
 impl<C, N: ArraySize> zeroize::ZeroizeOnDrop for ChaChaPoly1305<C, N> {}
 
+#[cfg(feature = "streaming")]
 impl<C, N> ChaChaPoly1305<C, N>
 where
     C: KeyIvInit<KeySize = U32, IvSize = N> + StreamCipher + StreamCipherSeek,
@@ -323,7 +326,6 @@ where
     /// Initialize a streaming cipher with the given nonce.
     /// This allows for encrypting/decrypting and generating the MAC incrementally, rather than all at once.
     pub fn init_stream(&self, nonce: &aead::Nonce<Self>) -> StreamingCipher<C, AadPhase> {
-        
         StreamingCipher::new(C::new(&self.key, nonce))
     }
 }
