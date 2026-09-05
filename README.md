@@ -9,6 +9,12 @@ algorithms written in pure Rust.
 AEADs are high-level symmetric encryption primitives which defend against a
 wide range of potential attacks (i.e. [IND-CCA3]).
 
+> **⚠️ Fork Information & Security Disclaimer**
+> \
+> **Security Notice:** This repository is a modified fork of the upstream RustCrypto AEAD crates, adapted to support scatter-gather/streaming APIs (e.g., for `no_std` environments). **These modifications have not undergone a formal security audit. Use at your own risk.**
+> \
+> **Repository Location:** The official development of this fork takes place on [Codeberg](https://codeberg.org/COLORADIO-Project/aeads-scatter-gather). **If you are viewing this on GitHub**, please note that this is a **read-only mirror**.
+
 ## Usage
 
 Crates functionality is expressed in terms of traits defined in the [`aead`]
