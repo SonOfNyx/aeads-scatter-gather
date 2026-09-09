@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+### Added
+- `standard` feature (enabled by default) to gate the traditional encryption and decryption API.
+- `streaming-one-pass` feature: Incremental AEAD processing in a single pass. Demands explicit handling due to Release of Unverified Plaintext (RUP) risks.
+- `streaming-two-pass` feature: Incremental AEAD processing that avoids RUP vulnerabilities by verifying the MAC in a first pass before allowing decryption in the second pass.
+- Type-State pattern in the streaming API enforcing correct cryptographic workflows at compile-time (e.g. AAD must be processed before ciphertext).
+
 ## 0.11.0 (2026-06-28)
 ### Added
 - `bytes` feature passthrough ([#631])

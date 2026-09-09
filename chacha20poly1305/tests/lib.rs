@@ -29,6 +29,7 @@ aead::new_fail_test!(
 
 macro_rules! impl_tests {
     ($cipher:ty, $key:expr, $nonce:expr, $aad:expr, $plaintext:expr, $ciphertext:expr, $tag:expr) => {
+        #[cfg(feature = "standard")]
         #[test]
         fn encrypt() {
             let key = Array(*$key);
@@ -45,6 +46,7 @@ macro_rules! impl_tests {
             assert_eq!($tag, &ciphertext[tag_begins..]);
         }
 
+        #[cfg(feature = "standard")]
         #[test]
         fn decrypt() {
             let key = Array(*$key);
@@ -62,6 +64,7 @@ macro_rules! impl_tests {
             assert_eq!($plaintext, plaintext.as_slice());
         }
 
+        #[cfg(feature = "standard")]
         #[test]
         fn decrypt_modified() {
             let key = Array(*$key);
@@ -82,6 +85,7 @@ macro_rules! impl_tests {
             assert!(cipher.decrypt(&nonce, payload).is_err());
         }
 
+        #[cfg(any(feature = "streaming-one-pass", feature = "streaming-two-pass"))]
         #[test]
         fn stream_encrypt() {
             use chacha20poly1305::aead::inout::InOutBuf;
@@ -106,8 +110,9 @@ macro_rules! impl_tests {
             assert_eq!($tag, tag.as_slice());
         }
 
+        #[cfg(feature = "streaming-one-pass")]
         #[test]
-        fn stream_decrypt() {
+        fn stream_decrypt_one_pass() {
             use chacha20poly1305::aead::inout::InOutBuf;
 
             let key = Array(*$key);
@@ -129,8 +134,9 @@ macro_rules! impl_tests {
             assert_eq!($plaintext, buffer.as_slice());
         }
 
+        #[cfg(feature = "streaming-one-pass")]
         #[test]
-        fn stream_decrypt_modified() {
+        fn stream_decrypt_modified_one_pass() {
             use chacha20poly1305::aead::inout::InOutBuf;
 
             let key = Array(*$key);
@@ -150,6 +156,58 @@ macro_rules! impl_tests {
                 .update_ciphertext_unverified(InOutBuf::from(buffer.as_mut_slice()))
                 .unwrap();
             assert!(stream.verify_and_finalize(&expected_tag).is_err());
+        }
+
+        #[cfg(feature = "streaming-two-pass")]
+        #[test]
+        fn stream_decrypt_two_pass() {
+            use chacha20poly1305::aead::inout::InOutBuf;
+
+            let key = Array(*$key);
+            let nonce = Array(*$nonce);
+            let expected_tag = chacha20poly1305::Tag::try_from($tag).unwrap();
+
+            let cipher = <$cipher>::new(&key);
+            let mut stream = cipher.init_stream(&nonce);
+
+            stream.update_aad($aad).unwrap();
+            let mut stream = stream.finish_aad().unwrap();
+
+            let mut buffer = $ciphertext.to_vec();
+            stream.update_ciphertext(buffer.as_mut_slice()).unwrap();
+            let stream = stream.verify(&expected_tag);
+
+            assert!(stream.is_ok());
+
+            let mut stream = stream.unwrap();
+
+            stream
+                .update_ciphertext_verified(InOutBuf::from(buffer.as_mut_slice()))
+                .unwrap();
+            stream.finalize().unwrap();
+
+            assert_eq!($plaintext, buffer.as_slice())
+        }
+
+        #[cfg(feature = "streaming-two-pass")]
+        #[test]
+        fn stream_decrypt_modified_two_pass() {
+
+            let key = Array(*$key);
+            let nonce = Array(*$nonce);
+            let expected_tag = chacha20poly1305::Tag::try_from($tag).unwrap();
+
+            let cipher = <$cipher>::new(&key);
+            let mut stream = cipher.init_stream(&nonce);
+
+            stream.update_aad($aad).unwrap();
+            let mut stream = stream.finish_aad().unwrap();
+
+            let mut buffer = $ciphertext.to_vec();
+            buffer[0] ^= 0xaa;
+
+            stream.update_ciphertext(buffer.as_mut_slice()).unwrap();
+            assert!(stream.verify(&expected_tag).is_err());
         }
     };
 }

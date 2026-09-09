@@ -18,9 +18,9 @@ of ChaCha20Poly1305 with an extended 192-bit (24-byte) nonce.
 [Documentation][docs-link]
 
 > **⚠️ Fork Information & Security Disclaimer**
-> 
+>
 > **Security Notice:** This repository is a modified fork of the upstream RustCrypto `chacha20poly1305` crate, adapted to support scatter-gather/streaming APIs. **These modifications have not undergone a formal security audit. Use at your own risk.** *(Note: The NCC Group audit mentioned below applies strictly to the original upstream code, not to these scatter-gather additions).*
-> 
+>
 > **Repository Location:** The official development of this fork takes place on [Codeberg](https://codeberg.org/COLORADIO-Project/aeads-scatter-gather). **If you are viewing this on GitHub**, please note that this is a **read-only mirror**.
 
 ## About

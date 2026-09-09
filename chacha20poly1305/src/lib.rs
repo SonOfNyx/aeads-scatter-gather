@@ -144,22 +144,137 @@
 //! # Ok(())
 //! # }
 //! ```
+//! ## Streaming API (Incremental Processing)
+//!
+//! For memory-constrained environments. Allows processing of data in chunks.
+//! This avoids large buffer allocations. Requires either the `streaming-one-pass` 
+//! or `streaming-two-pass` feature.
+//! 
+//! ### 1. One-Pass Streaming (`streaming-one-pass`)
+//! Fast, but requires explicit care to avoid Release of Unverified Plaintext (RUP) vulnerabilities.
+//!
+#![cfg_attr(all(feature = "getrandom", feature = "streaming-one-pass"), doc = "```")]
+#![cfg_attr(not(all(feature = "getrandom", feature = "streaming-one-pass")), doc = "```ignore")]
+//! # fn main() -> Result<(), Box<dyn core::error::Error>> {
+//! // NOTE: requires the `getrandom` and `streaming-one-pass` features
+//!
+//! use chacha20poly1305::{
+//!     aead::{AeadCore, Generate, Key, KeyInit, inout::InOutBuf},
+//!     ChaCha20Poly1305, Nonce
+//! };
+//!
+//! let key = Key::<ChaCha20Poly1305>::generate();
+//! let cipher = ChaCha20Poly1305::new(&key);
+//! let nonce = Nonce::generate(); // MUST be unique per message
+//!
+//! let mut buffer = *b"secret message..";
+//!
+//! // ENCRYPT INCREMENTALLY
+//! let mut stream = cipher.init_stream(&nonce);
+//!
+//! // 1. Process AAD in chunks
+//! stream.update_aad(b"associated ")?;
+//! stream.update_aad(b"data")?;
+//! let mut stream = stream.finish_aad()?;
+//!
+//! // 2. Encrypt plaintext in chunks
+//! let (chunk1, chunk2) = buffer.split_at_mut(8);
+//! stream.update_plaintext(InOutBuf::from(chunk1))?;
+//! stream.update_plaintext(InOutBuf::from(chunk2))?;
+//! let tag = stream.finalize()?;
+//!
+//! // DECRYPT INCREMENTALLY (One-Pass)
+//! let mut stream = cipher.init_stream(&nonce);
+//!
+//! // 1. Process AAD in chunks
+//! stream.update_aad(b"associated ")?;
+//! stream.update_aad(b"data")?;
+//! let mut stream = stream.finish_aad()?;
+//!
+//! // 2. Decrypt ciphertext in chunks
+//! let (chunk1, chunk2) = buffer.split_at_mut(8);
+//! stream.update_ciphertext_unverified(InOutBuf::from(chunk1))?;
+//! stream.update_ciphertext_unverified(InOutBuf::from(chunk2))?;
+//!
+//! // MUST check before trusting the contents of `buffer`!
+//! stream.verify_and_finalize(&tag)?; 
+//!
+//! assert_eq!(&buffer, b"secret message..");
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ### 2. Two-Pass Streaming (`streaming-two-pass`)
+//! No RUP vulnerabilities due to MAC verification before decryption.
+//!
+#![cfg_attr(all(feature = "getrandom", feature = "streaming-two-pass"), doc = "```")]
+#![cfg_attr(not(all(feature = "getrandom", feature = "streaming-two-pass")), doc = "```ignore")]
+//! # fn main() -> Result<(), Box<dyn core::error::Error>> {
+//! // NOTE: requires the `getrandom` and `streaming-two-pass` features
+//!
+//! use chacha20poly1305::{
+//!     aead::{AeadCore, Generate, Key, KeyInit, inout::InOutBuf},
+//!     ChaCha20Poly1305, Nonce
+//! };
+//!
+//! let key = Key::<ChaCha20Poly1305>::generate();
+//! let cipher = ChaCha20Poly1305::new(&key);
+//! let nonce = Nonce::generate(); // MUST be unique per message
+//!
+//! let mut buffer = *b"secret message..";
+//!
+//! // ENCRYPT INCREMENTALLY
+//! let mut stream = cipher.init_stream(&nonce);
+//! stream.update_aad(b"associated ")?;
+//! stream.update_aad(b"data")?;
+//! let mut stream = stream.finish_aad()?;
+//!
+//! let (chunk1, chunk2) = buffer.split_at_mut(8);
+//! stream.update_plaintext(InOutBuf::from(chunk1))?;
+//! stream.update_plaintext(InOutBuf::from(chunk2))?;
+//! let tag = stream.finalize()?;
+//!
+//! // DECRYPT INCREMENTALLY (Two-Pass)
+//! let mut stream = cipher.init_stream(&nonce);
+//! stream.update_aad(b"associated ")?;
+//! stream.update_aad(b"data")?;
+//! let mut stream = stream.finish_aad()?;
+//!
+//! // Pass 1: Verify the MAC by processing ciphertext chunks
+//! let (chunk1, chunk2) = buffer.split_at_mut(8);
+//! stream.update_ciphertext(chunk1)?;
+//! stream.update_ciphertext(chunk2)?;
+//! let mut stream = stream.verify(&tag)?; // Succeeds only if MAC is valid
+//!
+//! // Pass 2: Decrypt in chunks
+//! let (chunk1, chunk2) = buffer.split_at_mut(8);
+//! stream.update_ciphertext_verified(InOutBuf::from(chunk1))?;
+//! stream.update_ciphertext_verified(InOutBuf::from(chunk2))?;
+//! stream.finalize()?;
+//!
+//! assert_eq!(&buffer, b"secret message..");
+//! # Ok(())
+//! # }
+//! ```
 
+#[cfg(any(feature = "standard", feature = "streaming-one-pass", feature = "streaming-two-pass"))]
 mod cipher;
 
 pub use aead::{self, AeadCore, AeadInOut, Error, KeyInit, KeySizeUser, consts};
 
-#[cfg(feature = "streaming")]
+#[cfg(any(feature = "streaming-one-pass", feature = "streaming-two-pass"))]
 pub use self::cipher::{AadPhase, StreamingCipher};
 
 #[cfg(feature = "standard")]
 use self::cipher::Cipher;
+#[cfg(any(feature = "standard", feature = "streaming-one-pass", feature = "streaming-two-pass"))]
 use ::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
+#[cfg(feature = "standard")]
+use aead::inout::InOutBuf;
 use aead::{
     TagPosition,
     array::{Array, ArraySize},
     consts::{U12, U16, U24, U32},
-    inout::InOutBuf,
 };
 use core::marker::PhantomData;
 
@@ -317,7 +432,7 @@ where
 #[cfg(feature = "zeroize")]
 impl<C, N: ArraySize> zeroize::ZeroizeOnDrop for ChaChaPoly1305<C, N> {}
 
-#[cfg(feature = "streaming")]
+#[cfg(any(feature = "streaming-one-pass", feature = "streaming-two-pass"))]
 impl<C, N> ChaChaPoly1305<C, N>
 where
     C: KeyIvInit<KeySize = U32, IvSize = N> + StreamCipher + StreamCipherSeek,

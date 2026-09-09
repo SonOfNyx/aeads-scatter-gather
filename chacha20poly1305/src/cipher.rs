@@ -121,10 +121,10 @@ pub mod standard {
     }
 }
 
-#[cfg(feature = "streaming")]
+#[cfg(any(feature = "streaming-one-pass", feature = "streaming-two-pass"))]
 pub use streaming::*;
 
-#[cfg(feature = "streaming")]
+#[cfg(any(feature = "streaming-one-pass", feature = "streaming-two-pass"))]
 pub mod streaming {
     use super::*;
     use core::marker::PhantomData;
@@ -149,20 +149,37 @@ pub mod streaming {
     impl private::Locked for EncryptionPhase {}
     impl ValidNextPhase for EncryptionPhase {}
 
+    #[cfg(feature = "streaming-one-pass")]
     /// Phase for processing ciphertext for decryption and tag verification
     #[derive(Debug, Clone, Copy)]
+    pub struct OnePassDecryptionPhase;
+    #[cfg(feature = "streaming-one-pass")]
+    impl private::Locked for OnePassDecryptionPhase {}
+    #[cfg(feature = "streaming-one-pass")]
+    impl ValidNextPhase for OnePassDecryptionPhase {}
+
+    #[cfg(feature = "streaming-two-pass")]
+    /// Phase for processing ciphertext for verification and tag verification
+    #[derive(Debug, Clone, Copy)]
+    pub struct VerificationPhase;
+    #[cfg(feature = "streaming-two-pass")]
+    impl private::Locked for VerificationPhase {}
+    #[cfg(feature = "streaming-two-pass")]
+    impl ValidNextPhase for VerificationPhase {}
+
+    #[cfg(feature = "streaming-two-pass")]
+    /// Phase for processing ciphertext for decryption after tag verification
+    #[derive(Debug, Clone, Copy)]
     pub struct DecryptionPhase;
-    impl private::Locked for DecryptionPhase {}
-    impl ValidNextPhase for DecryptionPhase {}
 
     /// ChaCha20Poly1305 scatter/gather style instantiated with a particular nonce
     #[derive(Debug)]
-    pub struct StreamingCipher<C, State>
+    pub struct StreamingCipher<C, State, MacType = Poly1305>
     where
         C: StreamCipher + StreamCipherSeek,
     {
         cipher: C,
-        mac: Poly1305,
+        mac: MacType,
         aad_len: u64,
         payload_len: u64,
         buffer: [u8; 16],
@@ -325,7 +342,8 @@ pub mod streaming {
         }
     }
 
-    impl<C> StreamingCipher<C, DecryptionPhase>
+    #[cfg(feature = "streaming-one-pass")]
+    impl<C> StreamingCipher<C, OnePassDecryptionPhase>
     where
         C: StreamCipher + StreamCipherSeek,
     {
@@ -378,6 +396,90 @@ pub mod streaming {
                 }
                 Err(Error)
             }
+        }
+    }
+
+    #[cfg(feature = "streaming-two-pass")]
+    impl<C> StreamingCipher<C, VerificationPhase>
+    where
+        C: StreamCipher + StreamCipherSeek,
+    {
+        /// Function to incrementally update the ciphertext for verification
+        pub fn update_ciphertext(&mut self, data: &[u8]) -> Result<(), Error> {
+            self.check_and_update_payload_len(data.len())?;
+            self.process_mac(data)?;
+            Ok(())
+        }
+
+        /// Function to verify the authentication tag.
+        pub fn verify(
+            mut self,
+            expected_tag: &Tag,
+        ) -> Result<StreamingCipher<C, DecryptionPhase, ()>, Error> {
+            if self.buffer_pos > 0 {
+                let remainder = &self.buffer[..self.buffer_pos];
+                self.mac.update_padded(remainder);
+            }
+
+            let mut block = Array::default();
+            block[..8].copy_from_slice(&self.aad_len.to_le_bytes());
+            block[8..].copy_from_slice(&self.payload_len.to_le_bytes());
+            self.mac.update(&[block]);
+
+            if self.mac.verify(expected_tag).is_ok() {
+                Ok(StreamingCipher {
+                    cipher: self.cipher,
+                    mac: (),
+                    aad_len: self.aad_len,
+                    payload_len: self.payload_len,
+                    buffer: self.buffer,
+                    buffer_pos: self.buffer_pos,
+                    _state: PhantomData,
+                })
+            } else {
+                #[cfg(feature = "zeroize")]
+                {
+                    use zeroize::Zeroize;
+                    self.buffer.zeroize();
+                    self.aad_len.zeroize();
+                    self.payload_len.zeroize();
+                    self.buffer_pos.zeroize();
+                }
+                Err(Error)
+            }
+        }
+    }
+
+    #[cfg(feature = "streaming-two-pass")]
+    impl<C> StreamingCipher<C, DecryptionPhase, ()>
+    where
+        C: StreamCipher + StreamCipherSeek,
+    {
+        /// Function to incrementally update the ciphertext for decryption after tag verification.
+        pub fn update_ciphertext_verified(
+            &mut self,
+            mut buffer: InOutBuf<'_, '_, u8>,
+        ) -> Result<(), Error> {
+            // Check whether the length of the supplied ciphertext in this phase exceeds the length
+            // of the one supplied in the previous phase. Done by incrementally reducing the previous
+            // count.
+            let len = buffer.len() as u64;
+            if len > self.payload_len {
+                return Err(Error);
+            }
+            self.payload_len -= len;
+
+            self.cipher.apply_keystream_inout(buffer.reborrow());
+            Ok(())
+        }
+
+        /// Function to finalize the decryption process. Must be called to ensure the exact amount of
+        /// authenticated data was processed.
+        pub fn finalize(self) -> Result<(), Error> {
+            if self.payload_len != 0 {
+                return Err(Error);
+            }
+            Ok(())
         }
     }
 }
